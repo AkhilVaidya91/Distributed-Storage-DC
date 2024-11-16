@@ -1,29 +1,57 @@
 import streamlit as st
-from pymongo import MongoClient
-import gridfs
-import hashlib
-import datetime
-from dotenv import dotenv_values
-from pymongo.errors import PyMongoError
+import socket
+import json
+import base64
+from datetime import datetime
 import time
+from streamlit_option_menu import option_menu
 
-# Load environment variables
-config = dotenv_values(".env")
-CONN_STRING = config["CONN_STRING"]
+# Socket Configuration
+HOST = 'localhost'
+PORT = 65432
 
 # Page configuration
-st.set_page_config(page_title="Distributed File Storage System", layout="wide")
+st.set_page_config(
+    page_title="Distributed File Storage System",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# MongoDB connection
-try:
-    client = MongoClient(CONN_STRING)
-    db = client["file_storage_app"]
-    users_collection = db["users"]
-    metadata_collection = db["metadata"]
-    fs = gridfs.GridFS(db)
-except PyMongoError as e:
-    st.error("Failed to connect to the database. Please check your connection settings.")
-    st.stop()
+# Custom CSS
+st.markdown("""
+    <style>
+    .main {
+        padding: 2rem;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 2rem;
+    }
+    .stTabs [data-baseweb="tab"] {
+        padding: 1rem 2rem;
+        background-color: #f0f2f6;
+        border-radius: 0.5rem;
+    }
+    .stTabs [data-baseweb="tab"]:hover {
+        background-color: #e0e2e6;
+    }
+    .css-1y4p8pa {
+        padding: 2rem;
+        border-radius: 1rem;
+        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+    }
+    .stButton button {
+        width: 100%;
+        border-radius: 0.5rem;
+        padding: 0.5rem 1rem;
+    }
+    .upload-section {
+        padding: 2rem;
+        border: 2px dashed #ccc;
+        border-radius: 1rem;
+        text-align: center;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 # Session state initialization
 if 'logged_in' not in st.session_state:
@@ -31,208 +59,215 @@ if 'logged_in' not in st.session_state:
 if 'user_email' not in st.session_state:
     st.session_state.user_email = ''
 
-
-# Utility Functions
-def hash_password(password):
-    """Hashes a password using SHA-256."""
-    return hashlib.sha256(password.encode()).hexdigest()
-
-
-def create_user(name, email, password, demographics):
-    """Creates a new user in the database."""
+def send_request(request_type, action, data):
+    """Send request to server and receive response"""
     try:
-        users_collection.insert_one({
-            "name": name,
-            "email": email,
-            "password": hash_password(password),
-            "demographics": demographics
-        })
-    except PyMongoError as e:
-        st.error("An error occurred while creating your account. Please try again.")
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((HOST, PORT))
+            request = {
+                "type": request_type,
+                "action": action,
+                "data": data
+            }
+            s.sendall(json.dumps(request).encode())
+            response = s.recv(1024*1024)  # Increased buffer size for file transfers
+            return json.loads(response.decode())
+    except Exception as e:
+        st.error(f"Connection error: {str(e)}")
+        return {"status": "error", "message": "Server connection failed"}
 
-
-def fetch_user(email, password=None):
-    """Fetches a user by email and optional password."""
-    query = {"email": email}
-    if password:
-        query["password"] = hash_password(password)
-    try:
-        return users_collection.find_one(query)
-    except PyMongoError as e:
-        st.error("An error occurred while fetching user data.")
-        return None
-
-
-def handle_file_operations(action, data=None):
-    """
-    Handles CRUD operations for files and metadata.
-    :param action: str - 'create', 'read', or 'delete'.
-    :param data: dict - Data for the respective action.
-    :return: Result of the operation.
-    """
-    try:
-        if action == "create":
-            # Insert file into GridFS and metadata
-            file_id = fs.put(data['file_data'], filename=data['filename'], user_email=data['user_email'])
-            metadata_collection.insert_one({
-                "filename": data['filename'],
-                "filetype": data['filetype'],
-                "filesize": data['filesize'],
-                "upload_time": data['upload_time'],
-                "user_email": data['user_email'],
-                "file_name_input": data['file_name_input']
-            })
-            return file_id
-        elif action == "read":
-            # Retrieve files and metadata
-            return metadata_collection.find({"user_email": data['user_email']})
-        elif action == "delete":
-            # Delete file from GridFS and metadata
-            fs.delete(data['file_id'])
-            metadata_collection.delete_one({"_id": data['metadata_id']})
-            return True
-    except PyMongoError as e:
-        st.error("An error occurred during file operations.")
-        return None
-
-
-# Sidebar Authentication Functions
 def handle_login():
-    """Handles user login."""
-    st.sidebar.markdown("### Login")
-    email = st.sidebar.text_input("Email", key="login_email")
-    password = st.sidebar.text_input("Password", type="password", key="login_password")
-    if st.sidebar.button("Login"):
-        user = fetch_user(email, password)
-        if user:
-            st.session_state.logged_in = True
-            st.session_state.user_email = email
-            st.sidebar.success("Login successful")
-            st.rerun()
-        else:
-            st.sidebar.warning("Incorrect email or password")
-
+    """Handle user login"""
+    with st.form("login_form"):
+        st.markdown("### Welcome Back! 👋")
+        email = st.text_input("Email", placeholder="Enter your email")
+        password = st.text_input("Password", type="password", placeholder="Enter your password")
+        submit = st.form_submit_button("Login", use_container_width=True)
+        
+        if submit:
+            response = send_request("auth", "login", {
+                "email": email,
+                "password": password
+            })
+            
+            if response["status"] == "success":
+                st.session_state.logged_in = True
+                st.session_state.user_email = email
+                st.success("Login successful!")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("Invalid email or password")
 
 def handle_signup():
-    """Handles user signup."""
-    st.sidebar.markdown("### Signup")
-    name = st.sidebar.text_input("Name")
-    signup_email = st.sidebar.text_input("Email")
-    signup_password = st.sidebar.text_input("Password", type="password")
-    demographics = st.sidebar.text_input("Demographics")
-    if st.sidebar.button("Signup"):
-        if fetch_user(signup_email):
-            st.warning("Email already exists")
-        else:
-            create_user(name, signup_email, signup_password, demographics)
-            st.success("Signup successful, please log in using the sidebar.")
+    """Handle user signup"""
+    with st.form("signup_form"):
+        st.markdown("### Create New Account 📝")
+        name = st.text_input("Full Name", placeholder="Enter your full name")
+        email = st.text_input("Email", placeholder="Enter your email")
+        password = st.text_input("Password", type="password", placeholder="Create a strong password")
+        demographics = st.text_input("Demographics", placeholder="Enter your demographics")
+        submit = st.form_submit_button("Sign Up", use_container_width=True)
+        
+        if submit:
+            response = send_request("auth", "signup", {
+                "name": name,
+                "email": email,
+                "password": password,
+                "demographics": demographics
+            })
+            
+            if response["status"] == "success":
+                st.success("Account created successfully! Please login.")
+            else:
+                st.error(response["message"])
 
-
-# Main Application Interface
 def upload_files():
-    """Handles file uploads."""
-    st.header("Upload Files")
-    st.info("Upload files to your personal storage. You can upload multiple files at once.")
-    file_name_input = st.text_input("Enter File Name")
-    uploaded_files = st.file_uploader("Upload Files", accept_multiple_files=True)
-
-    if uploaded_files:
-        if st.button("Upload"):
-            for uploaded_file in uploaded_files:
-                file_data = uploaded_file.read()
-                file_info = {
-                    "file_data": file_data,
-                    "filename": uploaded_file.name,
-                    "filetype": uploaded_file.type,
-                    "filesize": len(file_data),
-                    "upload_time": datetime.datetime.now(),
-                    "user_email": st.session_state.user_email,
-                    "file_name_input": file_name_input
-                }
-                handle_file_operations("create", file_info)
-            st.success("Files uploaded successfully")
-
+    """Handle file uploads"""
+    st.markdown("### Upload Files 📤")
+    with st.container():
+        st.markdown("""
+        <div class="upload-section">
+            <h4>Drop your files here</h4>
+            <p>Supported formats: All file types</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        file_name_input = st.text_input("Custom File Name (optional)", placeholder="Enter a custom name for your file")
+        uploaded_files = st.file_uploader("Choose files", accept_multiple_files=True)
+        
+        if uploaded_files:
+            if st.button("Upload Files", use_container_width=True):
+                for uploaded_file in uploaded_files:
+                    file_data = base64.b64encode(uploaded_file.read()).decode('utf-8')
+                    response = send_request("file", "upload", {
+                        "file_data": file_data,
+                        "filename": uploaded_file.name,
+                        "filetype": uploaded_file.type,
+                        "user_email": st.session_state.user_email,
+                        "file_name_input": file_name_input
+                    })
+                    
+                    if response["status"] == "success":
+                        st.success(f"Uploaded {uploaded_file.name} successfully!")
+                    else:
+                        st.error(f"Failed to upload {uploaded_file.name}")
 
 def view_files():
-    """Displays user's files."""
-    st.header("Your Files")
-    st.info("View, download, or delete your uploaded files.")
-    files = handle_file_operations("read", {"user_email": st.session_state.user_email})
-    for file in files:
-        col1, col2, col3 = st.columns([2, 1, 1])
-        col1.write(file['filename'])
-        grid_out = fs.find_one({"filename": file['filename'], "user_email": st.session_state.user_email})
-        if grid_out:
-            col2.download_button(
-                label="Download",
-                data=grid_out.read(),
-                file_name=grid_out.filename,
-                key=str(file['_id'])
-            )
-        if col3.button("Delete", key=str(file['_id']) + '_del'):
-            handle_file_operations("delete", {"file_id": grid_out._id, "metadata_id": file['_id']})
-            st.success(f"Deleted {file['filename']}")
-            time.sleep(2)
-            st.rerun()
-
+    """Display user's files"""
+    st.markdown("### Your Files 📁")
+    
+    response = send_request("file", "list", {"user_email": st.session_state.user_email})
+    
+    if response["status"] == "success":
+        files = response["files"]
+        if not files:
+            st.info("No files uploaded yet")
+            return
+            
+        for file in files:
+            with st.container():
+                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                
+                col1.markdown(f"**{file['filename']}**")
+                col1.caption(f"Uploaded: {file['upload_time']}")
+                
+                # Download button
+                if col2.button("📥 Download", key=f"down_{file['_id']}"):
+                    download_response = send_request("file", "download", {
+                        "filename": file['filename'],
+                        "user_email": st.session_state.user_email
+                    })
+                    if download_response["status"] == "success":
+                        file_data = base64.b64decode(download_response["file_data"])
+                        col2.download_button(
+                            label="Save File",
+                            data=file_data,
+                            file_name=download_response["filename"],
+                            key=f"save_{file['_id']}"
+                        )
+                
+                # Delete button
+                if col3.button("🗑️ Delete", key=f"del_{file['_id']}"):
+                    delete_response = send_request("file", "delete", {
+                        "file_id": file['_id'],
+                        "metadata_id": file['_id']
+                    })
+                    if delete_response["status"] == "success":
+                        st.success("File deleted successfully")
+                        time.sleep(1)
+                        st.rerun()
 
 def user_info():
-    """Displays user information."""
-    st.header("User Information")
-    st.info("View your account details.")
-    user = fetch_user(st.session_state.user_email)
-    if user:
-        st.write(f"**Name:** {user['name']}")
-        st.write(f"**Email:** {user['email']}")
-        st.write(f"**Demographics:** {user['demographics']}")
-
-
-# Main Application Execution
-st.title("Distributed File Storage System")
-if not st.session_state.logged_in:
-    st.markdown("""
-    Welcome to our Distributed File Storage System! This application provides a secure and reliable platform for storing and managing your personal or professional files.
-
-    ## How It Works
-
-    Our system utilizes the power of MongoDB's GridFS to store your files in a distributed and redundant manner. When you upload a file, it is securely stored across multiple nodes in the MongoDB cluster, ensuring data availability and protection against a single point of failure.
-
-    ## Key Features
-
-    - **File Upload**: Easily upload files of any type and size to your personal storage. You can upload multiple files at once.
-    - **File Management**: View, download, and delete your uploaded files directly from the application interface.
-    - **User Authentication**: Sign up for an account and log in to access your personal file storage. Your data is protected and accessible only to you.
-    - **Metadata Tracking**: The system automatically tracks metadata such as filename, file type, file size, and upload timestamp for each of your files.
-    - **Secure Storage**: Your files are stored in a distributed manner using MongoDB's GridFS, ensuring high availability and data integrity.
-
-    ## Start Using the Platform
-
-    To get started, simply sign up for an account or log in using the sidebar options. Once authenticated, you can begin uploading and managing your files.
-
-    If you have any questions or need further assistance, please don't hesitate to reach out. We're here to help you make the most of our Distributed File Storage System.
-    """)
-    auth_option = st.sidebar.selectbox("Choose an option", ["Signup", "Login"])
-    if auth_option == "Login":
-        handle_login()
-    elif auth_option == "Signup":
-        handle_signup()
-else:
-
-    # st.sidebar.title("Distributed File Storage")
-    st.sidebar.markdown("# __Distributed File Storage__")
-    st.sidebar.success("Login Successful")
+    """Display user information"""
+    response = send_request("auth", "get_user", {"email": st.session_state.user_email})
     
-    if st.sidebar.button("Logout"):
-        st.session_state.logged_in = False
-        st.session_state.user_email = ''
-        st.sidebar.success("Logged out")
-        st.rerun()
+    if response["status"] == "success":
+        user = response["user"]
+        st.markdown("### Profile Information 👤")
+        
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.markdown("##### Personal Details")
+            st.write(f"**Name:** {user['name']}")
+            st.write(f"**Email:** {user['email']}")
+            st.write(f"**Demographics:** {user['demographics']}")
+        
+        with col2:
+            st.markdown("##### Storage Statistics")
+            files_response = send_request("file", "list", {"user_email": st.session_state.user_email})
+            if files_response["status"] == "success":
+                files = files_response["files"]
+                st.write(f"**Total Files:** {len(files)}")
+                total_size = sum(file['filesize'] for file in files)
+                st.write(f"**Total Storage Used:** {total_size/1024/1024:.2f} MB")
 
-    # Tabs for navigation
-    tabs = st.tabs(["File Upload", "Files", "User Info"])
-    with tabs[0]:
-        upload_files()
-    with tabs[1]:
-        view_files()
-    with tabs[2]:
-        user_info()
+def main():
+    """Main application"""
+    st.title("🗄️ Distributed File Storage System")
+    
+    if not st.session_state.logged_in:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            handle_login()
+        
+        with col2:
+            handle_signup()
+            
+        st.markdown("""
+        ---
+        ### Features ✨
+        - **Secure Storage:** Your files are protected with enterprise-grade security
+        - **Easy Access:** Upload and download files from anywhere
+        - **File Management:** Organize and manage your files efficiently
+        - **Multiple File Types:** Support for all file formats
+        """)
+    else:
+        # Sidebar navigation
+        with st.sidebar:
+            st.markdown("### Welcome Back! 👋")
+            selected = option_menu(
+                menu_title=None,
+                options=["Upload", "Files", "Profile", "Logout"],
+                icons=["cloud-upload", "folder", "person", "box-arrow-right"],
+                menu_icon="cast",
+                default_index=0,
+            )
+            
+            if selected == "Logout":
+                st.session_state.logged_in = False
+                st.session_state.user_email = ''
+                st.success("Logged out successfully!")
+                st.rerun()
+        
+        # Main content based on selection
+        if selected == "Upload":
+            upload_files()
+        elif selected == "Files":
+            view_files()
+        elif selected == "Profile":
+            user_info()
+
+if __name__ == "__main__":
+    main()
