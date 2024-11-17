@@ -7,11 +7,22 @@ import datetime
 from dotenv import dotenv_values
 from pymongo.errors import PyMongoError
 import base64
+from concurrent.futures import ThreadPoolExecutor
+import threading
+import queue
+import heapq
+from typing import Dict, List, Tuple
+import time
 
 # MongoDB Connection
 CONN_STRING = "CONN_STRING"
 HOST = 'localhost'
 PORT = 65432
+
+MAX_WORKERS = 4  # Number of worker threads
+WORKER_QUEUE = queue.Queue()
+active_connections: Dict[str, int] = {}  # Track active connections per worker
+connection_locks = threading.Lock()
 
 # Load environment variables
 config = dotenv_values(".env")
@@ -29,6 +40,57 @@ try:
 except PyMongoError as e:
     print(f"Database connection error: {e}")
     exit(1)
+
+
+class LoadBalancer:
+    def __init__(self, num_workers: int):
+        self.num_workers = num_workers
+        self.workers: List[Tuple[int, int]] = [(0, i) for i in range(num_workers)]  # (load, worker_id)
+        self.lock = threading.Lock()
+
+    def get_worker(self) -> int:
+        with self.lock:
+            load, worker_id = heapq.heappop(self.workers)
+            heapq.heappush(self.workers, (load + 1, worker_id))
+            return worker_id
+
+    def release_worker(self, worker_id: int):
+        with self.lock:
+            for i, (load, wid) in enumerate(self.workers):
+                if wid == worker_id:
+                    self.workers[i] = (max(0, load - 1), wid)
+                    heapq.heapify(self.workers)
+                    break
+
+class WorkerThread:
+    def __init__(self, worker_id: int, load_balancer: LoadBalancer):
+        self.worker_id = worker_id
+        self.load_balancer = load_balancer
+
+    def handle_client(self, conn, addr):
+        try:
+            while True:
+                data = conn.recv(1024*1024)
+                if not data:
+                    break
+
+                request = json.loads(data.decode())
+                response = None
+
+                if request['type'] == 'auth':
+                    response = handle_auth(request['action'], request['data'])
+                elif request['type'] == 'file':
+                    response = handle_file_operations(request['action'], request['data'])
+
+                conn.sendall(json.dumps(response).encode())
+
+        except Exception as e:
+            print(f"Worker {self.worker_id} error handling client {addr}: {e}")
+        finally:
+            with connection_locks:
+                active_connections[str(self.worker_id)] -= 1
+            self.load_balancer.release_worker(self.worker_id)
+            conn.close()
 
 def hash_password(password):
     """Hashes a password using SHA-256."""
@@ -120,37 +182,75 @@ def handle_file_operations(action, data):
     except PyMongoError as e:
         return {"status": "error", "message": str(e)}
 
+# def start_server():
+#     """Start the socket server"""
+#     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+#     server.bind((HOST, PORT))
+#     server.listen()
+#     print(f"Server listening on {HOST}:{PORT}")
+
+#     while True:
+#         conn, addr = server.accept()
+#         print(f"Connected by {addr}")
+        
+#         try:
+#             while True:
+#                 data = conn.recv(1024*1024)  # Increased buffer size for file transfers
+#                 if not data:
+#                     break
+                
+#                 request = json.loads(data.decode())
+#                 response = None
+                
+#                 if request['type'] == 'auth':
+#                     response = handle_auth(request['action'], request['data'])
+#                 elif request['type'] == 'file':
+#                     response = handle_file_operations(request['action'], request['data'])
+                
+#                 conn.sendall(json.dumps(response).encode())
+                
+#         except Exception as e:
+#             print(f"Error handling client: {e}")
+#         finally:
+#             conn.close()
+
 def start_server():
-    """Start the socket server"""
+    """Start the socket server with load balancing"""
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind((HOST, PORT))
     server.listen()
     print(f"Server listening on {HOST}:{PORT}")
 
+    # Initialize load balancer and worker pools
+    load_balancer = LoadBalancer(MAX_WORKERS)
+    thread_pool = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+    
+    # Initialize active connections counter for each worker
+    for i in range(MAX_WORKERS):
+        active_connections[str(i)] = 0
+
     while True:
-        conn, addr = server.accept()
-        print(f"Connected by {addr}")
-        
         try:
-            while True:
-                data = conn.recv(1024*1024)  # Increased buffer size for file transfers
-                if not data:
-                    break
-                
-                request = json.loads(data.decode())
-                response = None
-                
-                if request['type'] == 'auth':
-                    response = handle_auth(request['action'], request['data'])
-                elif request['type'] == 'file':
-                    response = handle_file_operations(request['action'], request['data'])
-                
-                conn.sendall(json.dumps(response).encode())
-                
+            conn, addr = server.accept()
+            print(f"New connection from {addr}")
+
+            # Get the least loaded worker
+            worker_id = load_balancer.get_worker()
+            
+            # Update active connections count
+            with connection_locks:
+                active_connections[str(worker_id)] += 1
+            
+            # Create worker and handle client
+            worker = WorkerThread(worker_id, load_balancer)
+            thread_pool.submit(worker.handle_client, conn, addr)
+
+            # Log current load distribution
+            print(f"Current connection distribution: {active_connections}")
+
         except Exception as e:
-            print(f"Error handling client: {e}")
-        finally:
-            conn.close()
+            print(f"Error accepting connection: {e}")
+            continue
 
 if __name__ == "__main__":
     start_server()
