@@ -13,6 +13,13 @@ CONN_STRING = "CONN_STRING"
 HOST = 'localhost'
 PORT = 65432
 
+# Load environment variables
+config = dotenv_values(".env")
+if config:
+    CONN_STRING = config.get("CONN_STRING")
+    HOST = config.get("HOST")
+    PORT = int(config.get("PORT"))
+
 try:
     client = MongoClient(CONN_STRING)
     db = client["file_storage_app"]

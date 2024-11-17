@@ -121,6 +121,31 @@ def handle_signup():
             else:
                 st.error(response["message"])
 
+def show_features():
+    """Display features section"""
+    # Title and Welcome Section
+    st.markdown("""    
+    #### Experience the next generation of secure, distributed file storage designed for both personal and professional use.    
+    ---
+    """)
+    
+    # Core Features Section
+    st.markdown("""    
+    ### 🔒 Enterprise-Grade Security
+    - End-to-end encryption for all your files
+    - Secure user authentication
+    
+    ### 🎯 Seamless Accessibility
+    - Access your files from anywhere, anytime
+    - Cross-platform compatibility
+    - Instant file synchronization
+    
+    ### 🔄 Versatile File Support
+    - Support for all file formats
+    - Automatic file type detection    
+    ---
+    """)
+
 def upload_files():
     """Handle file uploads"""
     st.markdown("### Upload Files 📤")
@@ -226,24 +251,25 @@ def main():
     st.title("🗄️ Distributed File Storage System")
     
     if not st.session_state.logged_in:
-        col1, col2 = st.columns(2)
+        # Sidebar navigation for non-logged-in users
+        with st.sidebar:
+            selected = option_menu(
+                menu_title="Navigation",
+                options=["Landing Page", "Login", "Sign Up"],
+                icons=["house", "box-arrow-in-right", "person-plus"],
+                menu_icon="cast",
+                default_index=0,
+            )
         
-        with col1:
+        # Main content based on selection
+        if selected == "Landing Page":
+            show_features()
+        elif selected == "Login":
             handle_login()
-        
-        with col2:
+        elif selected == "Sign Up":
             handle_signup()
-            
-        st.markdown("""
-        ---
-        ### Features ✨
-        - **Secure Storage:** Your files are protected with enterprise-grade security
-        - **Easy Access:** Upload and download files from anywhere
-        - **File Management:** Organize and manage your files efficiently
-        - **Multiple File Types:** Support for all file formats
-        """)
     else:
-        # Sidebar navigation
+        # Sidebar navigation for logged-in users
         with st.sidebar:
             st.markdown("### Welcome Back! 👋")
             selected = option_menu(
