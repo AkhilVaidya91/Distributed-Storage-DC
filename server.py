@@ -182,38 +182,6 @@ def handle_file_operations(action, data):
     except PyMongoError as e:
         return {"status": "error", "message": str(e)}
 
-# def start_server():
-#     """Start the socket server"""
-#     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-#     server.bind((HOST, PORT))
-#     server.listen()
-#     print(f"Server listening on {HOST}:{PORT}")
-
-#     while True:
-#         conn, addr = server.accept()
-#         print(f"Connected by {addr}")
-        
-#         try:
-#             while True:
-#                 data = conn.recv(1024*1024)  # Increased buffer size for file transfers
-#                 if not data:
-#                     break
-                
-#                 request = json.loads(data.decode())
-#                 response = None
-                
-#                 if request['type'] == 'auth':
-#                     response = handle_auth(request['action'], request['data'])
-#                 elif request['type'] == 'file':
-#                     response = handle_file_operations(request['action'], request['data'])
-                
-#                 conn.sendall(json.dumps(response).encode())
-                
-#         except Exception as e:
-#             print(f"Error handling client: {e}")
-#         finally:
-#             conn.close()
-
 def start_server():
     """Start the socket server with load balancing"""
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
